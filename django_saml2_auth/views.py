@@ -1,7 +1,3 @@
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
-
-
 from saml2 import (
     BINDING_HTTP_POST,
     BINDING_HTTP_REDIRECT,
@@ -20,7 +16,7 @@ from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.template import TemplateDoesNotExist
 from django.http import HttpResponseRedirect
-from django.utils.http import is_safe_url
+from django.utils.http import url_has_allowed_host_and_scheme
 
 from rest_auth.utils import jwt_encode
 
@@ -49,6 +45,12 @@ def _default_next_url():
 
 
 def get_current_domain(r):
+    if 'SECONDARY' in settings.SAML2_AUTH:
+        next_url = r.session.get(
+            'login_next_url', r.POST.get('RelayState', '')
+        )
+        if settings.SAML2_AUTH['SECONDARY']['SITE'] in next_url:
+            return settings.SAML2_AUTH['SECONDARY']['ASSERTION_URL']
     if 'ASSERTION_URL' in settings.SAML2_AUTH:
         return settings.SAML2_AUTH['ASSERTION_URL']
     return '{scheme}://{host}'.format(
@@ -89,7 +91,8 @@ def _get_metadata():
         }
 
 
-def _get_saml_client(domain):
+def _get_saml_client(r):
+    domain = get_current_domain(r)
     acs_url = domain + get_reverse([acs, 'acs', 'django_saml2_auth:acs'])
     metadata = _get_metadata()
 
@@ -112,7 +115,15 @@ def _get_saml_client(domain):
         },
     }
 
-    if 'ENTITY_ID' in settings.SAML2_AUTH:
+    if 'SECONDARY' in settings.SAML2_AUTH:
+        next_url = r.session.get(
+            'login_next_url', r.POST.get('RelayState', '')
+        )
+        if settings.SAML2_AUTH['SECONDARY']['SITE'] in next_url:
+            saml_settings['entityid'] = settings.SAML2_AUTH['SECONDARY']['ENTITY_ID']
+        else:
+            saml_settings['entityid'] = settings.SAML2_AUTH['ENTITY_ID']
+    elif 'ENTITY_ID' in settings.SAML2_AUTH:
         saml_settings['entityid'] = settings.SAML2_AUTH['ENTITY_ID']
 
     if 'NAME_ID_FORMAT' in settings.SAML2_AUTH:
@@ -155,7 +166,7 @@ def _create_new_user(username, email, firstname, lastname):
 
 @csrf_exempt
 def acs(r):
-    saml_client = _get_saml_client(get_current_domain(r))
+    saml_client = _get_saml_client(r)
     resp = r.POST.get('SAMLResponse', None)
     next_url = r.session.get('login_next_url', _default_next_url())
     # If relayState params is passed, use that else consider the previous 'next_url'
@@ -187,7 +198,7 @@ def acs(r):
             import_string(settings.SAML2_AUTH['TRIGGER']['BEFORE_LOGIN'])(user_identity)
     except User.DoesNotExist:
         new_user_should_be_created = settings.SAML2_AUTH.get('CREATE_USER', True)
-        if new_user_should_be_created: 
+        if new_user_should_be_created:
             target_user = _create_new_user(user_name, user_email, user_first_name, user_last_name)
             if settings.SAML2_AUTH.get('TRIGGER', {}).get('CREATE_USER', None):
                 import_string(settings.SAML2_AUTH['TRIGGER']['CREATE_USER'])(user_identity)
@@ -239,16 +250,16 @@ def signin(r):
 
     # Only permit signin requests where the next_url is a safe URL
     if parse_version(get_version()) >= parse_version('2.0'):
-        url_ok = is_safe_url(next_url, None)
+        url_ok = url_has_allowed_host_and_scheme(next_url, None)
     else:
-        url_ok = is_safe_url(next_url)
+        url_ok = url_has_allowed_host_and_scheme(next_url)
 
     if not url_ok:
         return HttpResponseRedirect(get_reverse([denied, 'denied', 'django_saml2_auth:denied']))
 
     r.session['login_next_url'] = next_url
 
-    saml_client = _get_saml_client(get_current_domain(r))
+    saml_client = _get_saml_client(r)
     _, info = saml_client.prepare_for_authenticate(relay_state=next_url)
 
     redirect_url = None
