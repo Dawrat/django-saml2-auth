@@ -17,6 +17,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.template import TemplateDoesNotExist
 from django.http import HttpResponseRedirect
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils import timezone
+from datetime import timedelta
 
 from rest_auth.utils import jwt_encode
 
@@ -223,7 +225,11 @@ def acs(r):
         frontend_url = settings.SAML2_AUTH.get(
             'FRONTEND_URL', next_url)
 
-        return HttpResponseRedirect(frontend_url+query)
+        response = HttpResponseRedirect(frontend_url+query)
+        # cookie expiration should be in UTC
+        expiration = timezone.now().utcnow() + timedelta(seconds=5)
+        response.set_cookie('token', value=jwt_token, samesite='Lax', domain=settings.SAML_COOKIE_DOMAIN, expires=expiration)
+        return response
 
     if is_new_user:
         try:
